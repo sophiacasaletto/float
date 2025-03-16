@@ -2,33 +2,33 @@ import RPi.GPIO as GPIO
 import time
 import smbus2
 
-IN1 = 17  #gpio pin for in1
-IN2 = 18  #gpio pin for in2
-I2C_ADDRESS=0x76 #bar02 sensor i2c address
+IN1 = 17  # gpio pin for in1
+IN2 = 18  # gpio pin for in2
+I2C_ADDRESS = 0x76  # bar02 sensor i2c address
 
-#commands for the ms5837 sensor (pressure)
-CMD_RESET=0x1E
-CMD_ADC_READ=0x00
-CMD_PRESSURE_CONV=0x40
-CMD_TEMPERATURE_CONV=0x50
+# commands for the ms5837 sensor (pressure)
+CMD_RESET = 0x1E
+CMD_ADC_READ = 0x00
+CMD_PRESSURE_CONV = 0x40
+CMD_TEMPERATURE_CONV = 0x50
 
-#initialize i2c bus
-bus=smbus2.SMBus(1)
+# initialize i2c bus
+bus = smbus2.SMBus(1)
 
-#initialize gpio
+# initialize gpio
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(IN1, GPIO.OUT)
 GPIO.setup(IN2, GPIO.OUT)
 
-#function to reset sensor
+# function to reset sensor
 def reset_sensor():
     bus.write_byte(I2C_ADDRESS, CMD_RESET)
     time.sleep(0.01)
 
-#read calibration data from prom
+# read calibration data from prom
 def read_prom():
     prom = []
-    for i in range(7):
+    for i in range(8):
         try:
             data = bus.read_i2c_block_data(I2C_ADDRESS, 0xA0 + (i * 2), 2)
             word = (data[0] << 8) | data[1]
@@ -39,14 +39,16 @@ def read_prom():
             prom.append(0)  
     return prom
 
+# read adc values
 def read_adc(cmd):
     bus.write_byte(I2C_ADDRESS, cmd)
-    time.sleep(0.02)  # Wait for conversion to complete
+    time.sleep(0.01)  # Wait for conversion to complete
     adc_bytes = bus.read_i2c_block_data(I2C_ADDRESS, CMD_ADC_READ, 3)
     adc_value = (adc_bytes[0] << 16) | (adc_bytes[1] << 8) | adc_bytes[2]
     print(f"Raw ADC Value: {adc_value}")
     return adc_value
 
+# calculate pressure and temperature from the sensor data
 def calculate_pressure_and_temperature(prom, adc_pressure, adc_temperature):
     # Extract calibration coefficients
     C1 = prom[1]
@@ -71,58 +73,75 @@ def calculate_pressure_and_temperature(prom, adc_pressure, adc_temperature):
 
     return pressure_kpa, temperature_c
 
+# function to reset i2c communication in case of issues
+def reset_i2c():
+    global bus
+    bus.close()
+    time.sleep(0.1)
+    bus = smbus2.SMBus(1)
 
-#function to run pump forward (uses gpio 17)
+# function to run pump forward (uses gpio 17)
 def pump_forward():
     print("Running pump forward")
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
 
-            
-#function to run pump backwards (uses gpio 18)
+# function to run pump backwards (uses gpio 18)
 def pump_backward():
     print("Running pump backward")
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
 
-#function to stop pump
+# function to stop pump
 def pump_stop():
     print("Stopping pump")
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
 
 reset_sensor()
-prom=read_prom()
+prom = read_prom()
 
 try:
     while True:
+        # Run pump forward
         pump_forward()
-        adc_pressure=read_adc(CMD_PRESSURE_CONV)
-        adc_temperature=read_adc(CMD_TEMPERATURE_CONV)
-        pressure_kpa, temperature_c=calculate_pressure_and_temperature(prom, adc_pressure, adc_temperature)
+        time.sleep(0.5)  # Let the pump stabilize
+        adc_pressure = read_adc(CMD_PRESSURE_CONV)
+        adc_temperature = read_adc(CMD_TEMPERATURE_CONV)
+        pressure_kpa, temperature_c = calculate_pressure_and_temperature(prom, adc_pressure, adc_temperature)
 
         print(f"Pressure: {pressure_kpa:.2f} kPa")
-        print(f"Temperature: {temperature_c:.2f} oC (sorry I couldn' find a degrees symbol)")
+        print(f"Temperature: {temperature_c:.2f} °C")
         time.sleep(5)
-        
+
+        # Stop pump
         pump_stop()
         time.sleep(1)
 
+        # Run pump backward
         pump_backward()
-        adc_pressure=read_adc(CMD_PRESSURE_CONV)
-        adc_temperature=read_adc(CMD_TEMPERATURE_CONV)
-        pressure_kpa, temperature_c=calculate_prssure_and_temperature(prom, adc_pressure, adc_temperature)
+        time.sleep(0.5)  # Let the pump stabilize
+        adc_pressure = read_adc(CMD_PRESSURE_CONV)
+        adc_temperature = read_adc(CMD_TEMPERATURE_CONV)
+        pressure_kpa, temperature_c = calculate_pressure_and_temperature(prom, adc_pressure, adc_temperature)
 
         print(f"Pressure: {pressure_kpa:.2f} kPa")
-        print(f"Temperature: {temperature_c:.2f} oC (sorry I couldn' find a degrees symbol)")
+        print(f"Temperature: {temperature_c:.2f} °C")
         time.sleep(5)
 
+        # Stop pump
         pump_stop()
         time.sleep(1)
+
+        # Reset I2C if any issue is detected with the sensor
+        if adc_pressure == 0 or adc_temperature == 0:  # Simple check, modify as needed
+            print("I2C Error detected, resetting I2C...")
+            reset_i2c()
 
 except KeyboardInterrupt:
+    GPIO.cleanup()
     print("Program exited")
 
 finally:
-    GPIO.cleanup()
     bus.close()
+
